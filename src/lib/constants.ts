@@ -1,5 +1,5 @@
 import type { LucideIcon } from 'lucide-react';
-import { Bean, Egg, Fish, Milk, Nut, Shrimp, Wheat, HelpCircle } from 'lucide-react';
+import { Bean, Egg, Fish, Milk, Nut, Shell, Wheat, HelpCircle } from 'lucide-react';
 
 export interface AllergenInfo {
   id: string;
@@ -15,7 +15,7 @@ export const COMMON_ALLERGENS_PROFILE: AllergenInfo[] = [
   { id: 'soy', name: 'Soy', Icon: Bean },
   { id: 'wheat', name: 'Wheat (Gluten)', Icon: Wheat },
   { id: 'fish', name: 'Fish', Icon: Fish },
-  { id: 'shellfish', name: 'Shellfish', Icon: Shrimp },
+  { id: 'shellfish', name: 'Shellfish', Icon: Shell },
 ];
 
 export const allergenIcons: Record<string, LucideIcon> = {
@@ -50,11 +50,11 @@ export const allergenIcons: Record<string, LucideIcon> = {
   'salmon': Fish,
   'tuna': Fish,
   'cod': Fish,
-  'shellfish': Shrimp,
-  'shrimp': Shrimp,
-  'crab': Shrimp,
-  'lobster': Shrimp,
-  'molluscs': Shrimp,
+  'shellfish': Shell,
+  'shrimp': Shell,
+  'crab': Shell,
+  'lobster': Shell,
+  'molluscs': Shell,
   'default': HelpCircle,
 };
 
