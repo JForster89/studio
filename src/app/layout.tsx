@@ -1,18 +1,9 @@
 import type {Metadata} from 'next';
-import {Geist_Sans, Geist_Mono} from 'next/font/google';
+import { GeistSans } from 'geist/font/sans';
+import { GeistMono } from 'geist/font/mono';
 import './globals.css';
 import { Toaster } from "@/components/ui/toaster";
 import { Navbar } from "@/components/Navbar";
-
-const geistSans = Geist_Sans({
-  variable: '--font-geist-sans',
-  subsets: ['latin'],
-});
-
-const geistMono = Geist_Mono({
-  variable: '--font-geist-mono',
-  subsets: ['latin'],
-});
 
 export const metadata: Metadata = {
   title: 'Allergen Alert',
@@ -25,8 +16,8 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en">
-      <body className={`${geistSans.variable} ${geistMono.variable} antialiased flex flex-col min-h-screen`}>
+    <html lang="en" className={`${GeistSans.variable} ${GeistMono.variable}`}>
+      <body className={`antialiased flex flex-col min-h-screen`}>
         <Navbar />
         <main className="flex-grow container mx-auto px-4 py-8">
           {children}
