@@ -1,4 +1,3 @@
-
 "use client";
 
 import { useForm } from 'react-hook-form';
@@ -18,7 +17,7 @@ import { useToast } from "@/hooks/use-toast";
 const allergenFormSchema = z.object({
   barcode: z.string().optional(),
   productName: z.string().optional(), 
-  ingredients: z.string().min(1, { message: "Ingredients list is required if not found via barcode or if product details are incomplete." }),
+  ingredients: z.string().min(1, { message: "Ingredients list is required. If not found via barcode or if product details are incomplete, please enter manually." }),
   productDescription: z.string().optional(),
 });
 
@@ -43,7 +42,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
   const [isFetchingBarcode, setIsFetchingBarcode] = useState(false);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
   const [barcodeWarning, setBarcodeWarning] = useState<string | null>(null);
-  const watchedBarcode = form.watch("barcode");
+  const [lastFetchedBarcode, setLastFetchedBarcode] = useState<string | null>(null);
 
   const videoRef = useRef<HTMLVideoElement>(null);
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
@@ -57,6 +56,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
     if (!barcodeToFetch.trim()) {
       setBarcodeError(null); 
       setBarcodeWarning(null);
+      setLastFetchedBarcode(null);
       return;
     }
     setIsFetchingBarcode(true);
@@ -70,6 +70,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
         form.setValue("productName", data.productName || "", { shouldValidate: true });
         form.setValue("ingredients", data.ingredients || "", { shouldValidate: true });
         form.setValue("productDescription", data.productDescription || "", { shouldValidate: true });
+        setLastFetchedBarcode(barcodeToFetch);
         
         if (data.warning) {
           setBarcodeWarning(data.warning);
@@ -79,45 +80,51 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
 
         if (data.ingredients && data.ingredients.trim() !== "") {
           form.clearErrors("ingredients"); 
-        } else if (data.productName && data.productName.trim() !== "") {
-           // If ingredients are empty but product exists, user might need to fill it.
-           // The schema validation for ingredients will kick in on submit.
         }
+        if (data.productName && data.productName.trim() !== "") {
+            form.clearErrors("productName");
+        }
+
 
       } else {
         setBarcodeError(data.error || "Failed to fetch barcode data. Please enter details manually.");
-        form.setValue("productName", "", { shouldValidate: true });
-        form.setValue("ingredients", "", { shouldValidate: true });
-        form.setValue("productDescription", "", { shouldValidate: true });
-
+        // Do not clear form fields here, user might have typed them
+        setLastFetchedBarcode(null); 
       }
     } catch (error) {
       console.error("Error fetching barcode data:", error);
       setBarcodeError("An error occurred fetching barcode data. Please enter details manually.");
-      form.setValue("productName", "", { shouldValidate: true });
-      form.setValue("ingredients", "", { shouldValidate: true });
-      form.setValue("productDescription", "", { shouldValidate: true });
+      setLastFetchedBarcode(null);
     } finally {
       setIsFetchingBarcode(false);
     }
   }, [form]);
 
+  // Effect to clear form and states if barcode is manually cleared
   useEffect(() => {
-    const currentBarcode = watchedBarcode?.trim();
-    if (currentBarcode && !isCameraOpen) { 
-      const handler = setTimeout(() => {
-        handleBarcodeFetch(currentBarcode);
-      }, 750); // Slightly longer debounce for external API
-
-      return () => clearTimeout(handler);
-    } else if (!currentBarcode) {
-      setIsFetchingBarcode(false);
-      setBarcodeError(null);
-      setBarcodeWarning(null);
-      // Optionally clear form fields if barcode is cleared, or leave for manual entry
-      // form.reset({ barcode: '', productName: '', ingredients: '', productDescription: '' });
-    }
-  }, [watchedBarcode, handleBarcodeFetch, isCameraOpen]);
+    const subscription = form.watch((value, { name, type }) => {
+      if (name === 'barcode' && type === 'change') {
+        const currentBarcodeValue = value.barcode?.trim();
+        if (!currentBarcodeValue) {
+          // Barcode field was cleared by user
+          if (lastFetchedBarcode) { // only reset if we had fetched something for a previous barcode
+            form.reset({
+                ...form.getValues(), // keep other fields if any they typed
+                barcode: '',
+                productName: '',
+                ingredients: '',
+                productDescription: ''
+            });
+          }
+          setLastFetchedBarcode(null);
+          setBarcodeError(null);
+          setBarcodeWarning(null);
+          setIsFetchingBarcode(false);
+        }
+      }
+    });
+    return () => subscription.unsubscribe();
+  }, [form, lastFetchedBarcode, setLastFetchedBarcode, setBarcodeError, setBarcodeWarning, setIsFetchingBarcode]);
 
 
   useEffect(() => {
@@ -130,7 +137,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
             stream.getTracks().forEach(track => track.stop());
             videoRef.current.srcObject = null;
         }
-        setHasCameraPermission(null); // Reset permission status
+        // Don't reset hasCameraPermission here, so UI can reflect last known state
         return;
     }
 
@@ -146,36 +153,32 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
             if (videoRef.current && codeReaderRef.current) {
                 videoRef.current.srcObject = streamInstance;
                 
-                videoRef.current.onloadedmetadata = () => {
-                    if (codeReaderRef.current && videoRef.current && videoRef.current.readyState >= videoRef.current.HAVE_METADATA) {
-                        codeReaderRef.current.decodeFromVideoElement(videoRef.current, (result, err) => {
-                            if (result) {
-                                form.setValue("barcode", result.getText(), { shouldValidate: true });
-                                // `handleBarcodeFetch` will be triggered by the `watchedBarcode` useEffect
-                                setIsCameraOpen(false); 
+                // Ensure video is playing before attempting to decode
+                await videoRef.current.play(); // Explicitly play
+
+                if (codeReaderRef.current && videoRef.current && videoRef.current.readyState >= videoRef.current.HAVE_METADATA) {
+                    codeReaderRef.current.decodeFromVideoElement(videoRef.current, async (result, err) => {
+                        if (result) {
+                            const scannedBarcode = result.getText();
+                            form.setValue("barcode", scannedBarcode, { shouldValidate: true });
+                            setIsCameraOpen(false); // Close camera UI first
+                            await handleBarcodeFetch(scannedBarcode); // Then fetch data
+                        }
+                        if (err) {
+                            if (err instanceof NotFoundException) {
+                                // Normal, no barcode found yet
+                            } else if (err.name === 'ChecksumException' || err.name === 'FormatException') {
+                                // Can be ignored, common for partial scans
+                            } else {
+                                console.warn('Barcode decoding error:', err);
+                                // setCameraError(`Scan Error: ${err.message}. Adjust position or lighting.`); // Potentially too noisy
                             }
-                            if (err) {
-                                if (err instanceof NotFoundException) {
-                                    // Normal, no barcode found
-                                } else if (err.name === 'ChecksumException' || err.name === 'FormatException') {
-                                    // Can be ignored
-                                } else {
-                                    console.warn('Barcode decoding error:', err);
-                                    // Don't set cameraError for minor scan issues, allow user to keep trying
-                                    // setCameraError(`Scan Error: ${err.message}. Adjust position or lighting.`);
-                                }
-                            }
-                        }).catch(decodeErr => {
-                            console.error("Error starting decodeFromVideoElement:", decodeErr);
-                            setCameraError("Could not start barcode scanner. Please try again or check camera permissions.");
-                            setIsCameraOpen(false);
-                        });
-                    }
-                };
-                videoRef.current.onerror = () => {
-                     console.error("Video element error");
-                     setCameraError("Video stream error. Please ensure your camera is working.");
-                     setIsCameraOpen(false);
+                        }
+                    }).catch(decodeErr => {
+                        console.error("Error starting decodeFromVideoElement:", decodeErr);
+                        setCameraError("Could not start barcode scanner. Try again or check camera.");
+                        setIsCameraOpen(false);
+                    });
                 }
             }
         } catch (error) {
@@ -205,27 +208,63 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
             videoRef.current.srcObject = null;
         }
     };
-  }, [isCameraOpen, form, toast]); 
+  }, [isCameraOpen, form, toast, handleBarcodeFetch]); 
 
   const toggleCameraScan = () => {
-    setIsCameraOpen(prev => !prev);
-    if (!isCameraOpen) {
+    const newCameraState = !isCameraOpen;
+    setIsCameraOpen(newCameraState);
+    if (newCameraState) { // If opening camera
         setCameraError(null); 
+        // Clear previous barcode search states only if initiating a new scan
         setBarcodeError(null); 
         setBarcodeWarning(null);
+        // Optionally clear barcode input when camera opens
+        // form.setValue("barcode", "");
+        // setLastFetchedBarcode(null);
     }
   };
   
-  const handleFormSubmit = (data: AllergenFormData) => {
-    if (!data.ingredients || data.ingredients.trim() === "") {
-      form.setError("ingredients", { type: "manual", message: "Ingredients list is required. If fetched via barcode, it might be missing from the database." });
-      return;
+  const handleFormSubmit = async (data: AllergenFormData) => {
+    // `data` is from form.handleSubmit, reflecting current form state.
+    // We need to get the latest values potentially after an async fetch.
+    let currentBarcode = form.getValues("barcode")?.trim();
+    let currentProductName = form.getValues("productName")?.trim();
+    let currentIngredients = form.getValues("ingredients")?.trim();
+
+    if (currentBarcode && (currentBarcode !== lastFetchedBarcode || !currentProductName || !currentIngredients)) {
+        if (isLoading) return; // Prevent conflict with AI analysis loading state
+
+        setIsFetchingBarcode(true);
+        await handleBarcodeFetch(currentBarcode);
+        setIsFetchingBarcode(false);
+        
+        // Re-fetch form values as they might have been updated by handleBarcodeFetch
+        currentProductName = form.getValues("productName")?.trim();
+        currentIngredients = form.getValues("ingredients")?.trim();
     }
-     if (!data.productName || data.productName.trim() === "") {
-        form.setError("productName", {type: "manual", message: "Product name is required. If fetched via barcode, it might be missing."});
+
+    // Perform validation based on the (potentially) updated values
+    let hasError = false;
+    if (!currentProductName) {
+        form.setError("productName", {type: "manual", message: "Product name is required. If using barcode, it might be missing or fetch failed."});
+        hasError = true;
+    } else {
+        form.clearErrors("productName");
+    }
+
+    if (!currentIngredients) {
+      form.setError("ingredients", { type: "manual", message: "Ingredients list is required. If using barcode, it might be missing from the database or fetch failed." });
+      hasError = true;
+    } else {
+        form.clearErrors("ingredients");
+    }
+    
+    if (hasError) {
         return;
     }
-    onSubmit(data);
+    
+    // Use the most up-to-date form values for submission
+    onSubmit(form.getValues());
   };
 
 
@@ -252,13 +291,17 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                     render={({ field }) => (
                         <FormItem className="flex-grow">
                         <FormControl>
-                            <Input placeholder="e.g., 1234567890123 or scan" {...field} disabled={isCameraOpen || isFetchingBarcode} />
+                            <Input 
+                                placeholder="e.g., 1234567890123 or scan" 
+                                {...field} 
+                                disabled={isCameraOpen || isFetchingBarcode || isLoading} 
+                            />
                         </FormControl>
                         <FormMessage />
                         </FormItem>
                     )}
                     />
-                    <Button type="button" onClick={toggleCameraScan} variant="outline" size="icon" aria-label={isCameraOpen ? "Stop Scanning" : "Scan with Camera"} disabled={isFetchingBarcode}>
+                    <Button type="button" onClick={toggleCameraScan} variant="outline" size="icon" aria-label={isCameraOpen ? "Stop Scanning" : "Scan with Camera"} disabled={isFetchingBarcode || isLoading}>
                         {isCameraOpen ? <VideoOff size={20} /> : <Camera size={20} />}
                     </Button>
                 </div>
@@ -271,15 +314,15 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                     Fetching product info from Open Food Facts...
                     </div>
                 )}
-                {barcodeError && !isCameraOpen && (
+                {barcodeError && !isCameraOpen && ( // Only show if camera isn't the source of barcode input
                     <Alert variant="destructive" className="mt-2">
                         <AlertCircle className="h-4 w-4" />
                         <AlertTitle>Barcode Lookup Failed</AlertTitle>
                         <AlertDescription>{barcodeError}</AlertDescription>
                     </Alert>
                 )}
-                {barcodeWarning && !isCameraOpen && !barcodeError && (
-                    <Alert variant="default" className="mt-2 border-yellow-500 text-yellow-700 [&>svg]:text-yellow-500">
+                {barcodeWarning && !isCameraOpen && !barcodeError && ( // Only show if camera isn't the source
+                    <Alert variant="default" className="mt-2 border-yellow-500 text-yellow-700 dark:text-yellow-400 dark:border-yellow-700 [&>svg]:text-yellow-500 dark:[&>svg]:text-yellow-400">
                         <AlertTriangle className="h-4 w-4" />
                         <AlertTitle>Partial Product Info</AlertTitle>
                         <AlertDescription>{barcodeWarning}</AlertDescription>
@@ -307,11 +350,11 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                         </Alert>
                     )}
                      {hasCameraPermission === true && !cameraError && (
-                        <Alert variant="default" className="bg-primary/10 border-primary/30">
+                        <Alert variant="default" className="bg-primary/10 border-primary/30 dark:bg-primary/20 dark:border-primary/40">
                            <ScanLine className="h-4 w-4 text-primary"/>
                             <AlertTitle>Scanning Active</AlertTitle>
                             <AlertDescription>
-                                Point your camera at a barcode.
+                                Point your camera at a barcode. Scanner is active.
                             </AlertDescription>
                         </Alert>
                     )}
@@ -325,7 +368,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                 <FormItem>
                   <FormLabel className="flex items-center gap-2"><FileText size={18}/>Product Name</FormLabel>
                   <FormControl>
-                    <Input placeholder="e.g., Crunchy Peanut Butter" {...field} disabled={isFetchingBarcode || isCameraOpen} />
+                    <Input placeholder="e.g., Crunchy Peanut Butter" {...field} disabled={isFetchingBarcode || isCameraOpen || isLoading} />
                   </FormControl>
                   <FormMessage />
                 </FormItem>
@@ -342,7 +385,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                       placeholder="e.g., Peanuts, Sugar, Salt. (Required if not found via barcode or if info is incomplete)"
                       className="min-h-[100px]"
                       {...field}
-                      disabled={isFetchingBarcode || isCameraOpen}
+                      disabled={isFetchingBarcode || isCameraOpen || isLoading}
                     />
                   </FormControl>
                   <FormMessage />
@@ -360,7 +403,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                       placeholder="e.g., A delicious spread for sandwiches and snacks."
                       className="min-h-[80px]"
                       {...field}
-                      disabled={isFetchingBarcode || isCameraOpen}
+                      disabled={isFetchingBarcode || isCameraOpen || isLoading}
                     />
                   </FormControl>
                   <FormMessage />
@@ -376,7 +419,16 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                   </svg>
                   Analyzing...
                 </div>
-              ) : (
+              ) : isFetchingBarcode ? (
+                <div className="flex items-center justify-center">
+                  <svg className="animate-spin h-5 w-5 mr-3" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
+                    <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
+                    <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
+                  </svg>
+                  Fetching Product...
+                </div>
+              )
+              : (
                 <div className="flex items-center justify-center gap-2">
                   <Barcode size={20}/> Check Allergens
                 </div>
@@ -388,4 +440,3 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
     </Card>
   );
 }
-
