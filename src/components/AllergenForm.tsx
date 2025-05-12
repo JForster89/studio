@@ -9,7 +9,7 @@ import { Input } from '@/components/ui/input';
 import { Textarea } from '@/components/ui/textarea';
 import { Card, CardContent, CardHeader, CardTitle, CardDescription } from '@/components/ui/card';
 import { Form, FormControl, FormField, FormItem, FormLabel, FormMessage } from '@/components/ui/form';
-import { Barcode, Info, ListChecks, ScanLine, FileText, ChefHat, AlertCircle, Camera, VideoOff } from 'lucide-react';
+import { Barcode, Info, ListChecks, ScanLine, FileText, ChefHat, AlertCircle, Camera, VideoOff, AlertTriangle } from 'lucide-react';
 import { useEffect, useState, useCallback, useRef } from 'react';
 import { Alert, AlertTitle, AlertDescription } from "@/components/ui/alert";
 import { BrowserMultiFormatReader, NotFoundException } from '@zxing/library';
@@ -17,8 +17,8 @@ import { useToast } from "@/hooks/use-toast";
 
 const allergenFormSchema = z.object({
   barcode: z.string().optional(),
-  productName: z.string().optional(), // No longer strictly required if barcode fills it
-  ingredients: z.string().min(1, { message: "Ingredients list is required if not found via barcode." }),
+  productName: z.string().optional(), 
+  ingredients: z.string().min(1, { message: "Ingredients list is required if not found via barcode or if product details are incomplete." }),
   productDescription: z.string().optional(),
 });
 
@@ -42,9 +42,9 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
 
   const [isFetchingBarcode, setIsFetchingBarcode] = useState(false);
   const [barcodeError, setBarcodeError] = useState<string | null>(null);
+  const [barcodeWarning, setBarcodeWarning] = useState<string | null>(null);
   const watchedBarcode = form.watch("barcode");
 
-  // Camera scanning state
   const videoRef = useRef<HTMLVideoElement>(null);
   const codeReaderRef = useRef<BrowserMultiFormatReader | null>(null);
   const [isCameraOpen, setIsCameraOpen] = useState(false);
@@ -55,12 +55,13 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
 
   const handleBarcodeFetch = useCallback(async (barcodeToFetch: string) => {
     if (!barcodeToFetch.trim()) {
-      setBarcodeError(null); // Clear error if barcode is empty
-      // Do not clear other fields here, allow manual entry
+      setBarcodeError(null); 
+      setBarcodeWarning(null);
       return;
     }
     setIsFetchingBarcode(true);
     setBarcodeError(null);
+    setBarcodeWarning(null);
     try {
       const response = await fetch(`/api/barcode?barcode=${barcodeToFetch}`);
       const data = await response.json();
@@ -69,14 +70,33 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
         form.setValue("productName", data.productName || "", { shouldValidate: true });
         form.setValue("ingredients", data.ingredients || "", { shouldValidate: true });
         form.setValue("productDescription", data.productDescription || "", { shouldValidate: true });
-        form.clearErrors("ingredients"); // Clear ingredients error if successfully fetched
+        
+        if (data.warning) {
+          setBarcodeWarning(data.warning);
+        } else {
+          setBarcodeWarning(null);
+        }
+
+        if (data.ingredients && data.ingredients.trim() !== "") {
+          form.clearErrors("ingredients"); 
+        } else if (data.productName && data.productName.trim() !== "") {
+           // If ingredients are empty but product exists, user might need to fill it.
+           // The schema validation for ingredients will kick in on submit.
+        }
+
       } else {
         setBarcodeError(data.error || "Failed to fetch barcode data. Please enter details manually.");
-        // Do not clear fields here to allow manual correction or entry
+        form.setValue("productName", "", { shouldValidate: true });
+        form.setValue("ingredients", "", { shouldValidate: true });
+        form.setValue("productDescription", "", { shouldValidate: true });
+
       }
     } catch (error) {
       console.error("Error fetching barcode data:", error);
       setBarcodeError("An error occurred fetching barcode data. Please enter details manually.");
+      form.setValue("productName", "", { shouldValidate: true });
+      form.setValue("ingredients", "", { shouldValidate: true });
+      form.setValue("productDescription", "", { shouldValidate: true });
     } finally {
       setIsFetchingBarcode(false);
     }
@@ -84,21 +104,22 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
 
   useEffect(() => {
     const currentBarcode = watchedBarcode?.trim();
-    // Only fetch if barcode is not empty AND not currently being scanned by camera (to avoid race conditions)
     if (currentBarcode && !isCameraOpen) { 
       const handler = setTimeout(() => {
         handleBarcodeFetch(currentBarcode);
-      }, 500); 
+      }, 750); // Slightly longer debounce for external API
 
       return () => clearTimeout(handler);
     } else if (!currentBarcode) {
       setIsFetchingBarcode(false);
       setBarcodeError(null);
+      setBarcodeWarning(null);
+      // Optionally clear form fields if barcode is cleared, or leave for manual entry
+      // form.reset({ barcode: '', productName: '', ingredients: '', productDescription: '' });
     }
   }, [watchedBarcode, handleBarcodeFetch, isCameraOpen]);
 
 
-  // Effect for camera permission and stream setup
   useEffect(() => {
     if (!isCameraOpen) {
         if (codeReaderRef.current) {
@@ -109,7 +130,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
             stream.getTracks().forEach(track => track.stop());
             videoRef.current.srcObject = null;
         }
-        setHasCameraPermission(null);
+        setHasCameraPermission(null); // Reset permission status
         return;
     }
 
@@ -117,41 +138,45 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
     let streamInstance: MediaStream | null = null;
 
     const startScanning = async () => {
-        setCameraError(null); // Clear previous errors
+        setCameraError(null); 
         try {
             streamInstance = await navigator.mediaDevices.getUserMedia({ video: { facingMode: 'environment' } });
             setHasCameraPermission(true);
 
             if (videoRef.current && codeReaderRef.current) {
                 videoRef.current.srcObject = streamInstance;
-                // videoRef.current.play(); // autoPlay handles this
                 
-                // Wait for video to be ready to avoid errors
                 videoRef.current.onloadedmetadata = () => {
-                    if (codeReaderRef.current && videoRef.current) { // Check again due to async nature
+                    if (codeReaderRef.current && videoRef.current && videoRef.current.readyState >= videoRef.current.HAVE_METADATA) {
                         codeReaderRef.current.decodeFromVideoElement(videoRef.current, (result, err) => {
                             if (result) {
                                 form.setValue("barcode", result.getText(), { shouldValidate: true });
                                 // `handleBarcodeFetch` will be triggered by the `watchedBarcode` useEffect
-                                setIsCameraOpen(false); // Close camera on successful scan
+                                setIsCameraOpen(false); 
                             }
                             if (err) {
                                 if (err instanceof NotFoundException) {
-                                    // Normal, no barcode found in this frame
+                                    // Normal, no barcode found
                                 } else if (err.name === 'ChecksumException' || err.name === 'FormatException') {
-                                    // Common for blurry scans, can be ignored until a clear scan
+                                    // Can be ignored
                                 } else {
-                                    console.error('Barcode decoding error:', err);
-                                    setCameraError(`Scan Error: ${err.message}. Adjust position or lighting.`);
+                                    console.warn('Barcode decoding error:', err);
+                                    // Don't set cameraError for minor scan issues, allow user to keep trying
+                                    // setCameraError(`Scan Error: ${err.message}. Adjust position or lighting.`);
                                 }
                             }
                         }).catch(decodeErr => {
                             console.error("Error starting decodeFromVideoElement:", decodeErr);
-                            setCameraError("Could not start barcode scanner. Please try again.");
+                            setCameraError("Could not start barcode scanner. Please try again or check camera permissions.");
                             setIsCameraOpen(false);
                         });
                     }
                 };
+                videoRef.current.onerror = () => {
+                     console.error("Video element error");
+                     setCameraError("Video stream error. Please ensure your camera is working.");
+                     setIsCameraOpen(false);
+                }
             }
         } catch (error) {
             console.error('Error accessing camera:', error);
@@ -184,23 +209,20 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
 
   const toggleCameraScan = () => {
     setIsCameraOpen(prev => !prev);
-    if (!isCameraOpen) { // If about to open camera
-        setCameraError(null); // Clear previous errors when opening
-        setBarcodeError(null); // Clear barcode input error
+    if (!isCameraOpen) {
+        setCameraError(null); 
+        setBarcodeError(null); 
+        setBarcodeWarning(null);
     }
   };
   
   const handleFormSubmit = (data: AllergenFormData) => {
-    // If product name is empty but barcode is present, it implies barcode lookup might have failed
-    // or user cleared it. Ingredients are key.
-    if (!data.productName && data.barcode && !data.ingredients) {
-      form.setError("ingredients", { type: "manual", message: "Ingredients are required if product details could not be fetched via barcode." });
+    if (!data.ingredients || data.ingredients.trim() === "") {
+      form.setError("ingredients", { type: "manual", message: "Ingredients list is required. If fetched via barcode, it might be missing from the database." });
       return;
     }
-    // If no barcode, product name and ingredients are essential
-    if (!data.barcode && (!data.productName || !data.ingredients)) {
-        if (!data.productName) form.setError("productName", {type: "manual", message: "Product name is required if not using barcode."});
-        if (!data.ingredients) form.setError("ingredients", {type: "manual", message: "Ingredients list is required."});
+     if (!data.productName || data.productName.trim() === "") {
+        form.setError("productName", {type: "manual", message: "Product name is required. If fetched via barcode, it might be missing."});
         return;
     }
     onSubmit(data);
@@ -241,19 +263,26 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                     </Button>
                 </div>
                 {isFetchingBarcode && (
-                    <div className="flex items-center text-sm text-muted-foreground">
+                    <div className="flex items-center text-sm text-muted-foreground pt-1">
                     <svg className="animate-spin mr-2 h-4 w-4 text-primary" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg">
                         <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4"></circle>
                         <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
                     </svg>
-                    Fetching product info...
+                    Fetching product info from Open Food Facts...
                     </div>
                 )}
-                 {barcodeError && !isCameraOpen && ( // Only show barcode input error if camera is not open
+                {barcodeError && !isCameraOpen && (
                     <Alert variant="destructive" className="mt-2">
                         <AlertCircle className="h-4 w-4" />
-                        <AlertTitle>Barcode Lookup Issue</AlertTitle>
+                        <AlertTitle>Barcode Lookup Failed</AlertTitle>
                         <AlertDescription>{barcodeError}</AlertDescription>
+                    </Alert>
+                )}
+                {barcodeWarning && !isCameraOpen && !barcodeError && (
+                    <Alert variant="default" className="mt-2 border-yellow-500 text-yellow-700 [&>svg]:text-yellow-500">
+                        <AlertTriangle className="h-4 w-4" />
+                        <AlertTitle>Partial Product Info</AlertTitle>
+                        <AlertDescription>{barcodeWarning}</AlertDescription>
                     </Alert>
                 )}
             </div>
@@ -268,12 +297,21 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                             <AlertDescription>{cameraError}</AlertDescription>
                         </Alert>
                     )}
-                    {hasCameraPermission === false && !cameraError && ( // Show generic permission message if no specific error set
+                    {hasCameraPermission === false && !cameraError && ( 
                         <Alert variant="destructive">
                             <AlertCircle className="h-4 w-4" />
                             <AlertTitle>Camera Access Required</AlertTitle>
                             <AlertDescription>
                                 Please allow camera access in your browser settings to use the scanner.
+                            </AlertDescription>
+                        </Alert>
+                    )}
+                     {hasCameraPermission === true && !cameraError && (
+                        <Alert variant="default" className="bg-primary/10 border-primary/30">
+                           <ScanLine className="h-4 w-4 text-primary"/>
+                            <AlertTitle>Scanning Active</AlertTitle>
+                            <AlertDescription>
+                                Point your camera at a barcode.
                             </AlertDescription>
                         </Alert>
                     )}
@@ -301,7 +339,7 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
                   <FormLabel className="flex items-center gap-2"><ListChecks size={18}/>Ingredients List</FormLabel>
                   <FormControl>
                     <Textarea
-                      placeholder="e.g., Peanuts, Sugar, Salt. (Required if not found via barcode)"
+                      placeholder="e.g., Peanuts, Sugar, Salt. (Required if not found via barcode or if info is incomplete)"
                       className="min-h-[100px]"
                       {...field}
                       disabled={isFetchingBarcode || isCameraOpen}
@@ -350,3 +388,4 @@ export function AllergenForm({ onSubmit, isLoading }: AllergenFormProps) {
     </Card>
   );
 }
+
