@@ -16,7 +16,7 @@ export default function RootLayout({
 }>) {
   return (
     <html lang="en" className={GeistSans.className}>
-      <body className={`antialiased flex flex-col min-h-screen`}>
+      <body className={`antialiased flex flex-col min-h-screen`} suppressHydrationWarning={true}>
         <Navbar />
         <main className="flex-grow container mx-auto px-4 py-8">
           {children}
